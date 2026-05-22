@@ -1,0 +1,165 @@
+openapi: 3.0.0
+info:
+  title: PaceAI API
+  version: 1.0.0
+  description: AI-powered endurance coaching backend using Strava, ACWR analytics, weather intelligence, and OpenAI.
+servers:
+  - url: http://localhost:8000
+paths:
+  /:
+    get:
+      summary: Health Check
+      responses:
+        '200':
+          description: API running successfully
+  /auth/strava/login:
+    get:
+      summary: Redirect user to Strava OAuth login
+      responses:
+        '302':
+          description: Redirect to Strava OAuth
+  /auth/strava/callback:
+    get:
+      summary: Handle Strava OAuth callback
+      parameters:
+        - in: query
+          name: code
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Strava authentication successful
+  /activities:
+    get:
+      summary: Fetch recent Strava activities
+      parameters:
+        - in: query
+          name: access_token
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: per_page
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        '200':
+          description: Recent running activities
+  /acwr:
+    get:
+      summary: Calculate ACWR from Strava activities
+      parameters:
+        - in: query
+          name: access_token
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: per_page
+          required: false
+          schema:
+            type: integer
+            default: 40
+      responses:
+        '200':
+          description: ACWR analytics response
+  /weather:
+    get:
+      summary: Get current weather conditions
+      parameters:
+        - in: query
+          name: city
+          required: false
+          schema:
+            type: string
+            default: Dublin,IE
+      responses:
+        '200':
+          description: Current weather data
+  /recommendation/today:
+    get:
+      summary: Get personalized training recommendation
+      parameters:
+        - in: query
+          name: access_token
+          required: true
+          schema:
+            type: string
+        - in: query
+          name: city
+          required: false
+          schema:
+            type: string
+            default: Dublin,IE
+        - in: query
+          name: per_page
+          required: false
+          schema:
+            type: integer
+            default: 40
+      responses:
+        '200':
+          description: Personalized coaching recommendation
+  /chat:
+    post:
+      summary: Chat with PaceAI coaching agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message:
+                  type: string
+                  example: Should I run today?
+                access_token:
+                  type: string
+                  example: YOUR_STRAVA_ACCESS_TOKEN
+      responses:
+        '200':
+          description: AI coaching response
+components:
+  schemas:
+    Activity:
+      type: object
+      properties:
+        name:
+          type: string
+        date:
+          type: string
+        distance_km:
+          type: number
+        duration_minutes:
+          type: number
+        pace_min_per_km:
+          type: number
+        elevation_gain_m:
+          type: number
+    ACWRResponse:
+      type: object
+      properties:
+        current_acwr:
+          type: number
+        acute_load_7d:
+          type: number
+        chronic_load_28d_avg:
+          type: number
+        status:
+          type: string
+    WeatherResponse:
+      type: object
+      properties:
+        city:
+          type: string
+        temperature_c:
+          type: number
+        humidity_pct:
+          type: number
+        wind_speed_kmh:
+          type: number
+        description:
+          type: string
