@@ -1,29 +1,29 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.responses import RedirectResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.database.db import Base, engine, get_db
+from app.database import models
+
+from app.tools.weather import get_current_weather
 from app.tools.strava import get_recent_activities
 from app.tools.acwr import calculate_acwr_from_activities
-from app.tools.weather import get_current_weather
 from app.tools.recommendation import recommend_training_today
-from app.agents.paceai_agent import run_paceai_agent
+
 from app.services.strava_oauth import (
     get_strava_auth_url,
     exchange_code_for_token,
 )
-from pydantic import BaseModel
-from fastapi.middleware.cors import CORSMiddleware
-from app.database.db import Base, engine
-from app.database import models
-from sqlalchemy.orm import Session
-from app.database.db import SessionLocal
-from app.database.models import User, StravaToken
+from app.services.token_service import get_latest_access_token
+from app.agents.paceai_agent import run_paceai_agent
 
 
+Base.metadata.create_all(bind=engine)
 
-class ChatRequest(BaseModel):
-    message: str
-    access_token: str
+app = FastAPI(title="PaceAI Backend")
 
-app = FastAPI(title="PaceAI API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -36,77 +36,90 @@ app.add_middleware(
 )
 
 
-Base.metadata.create_all(bind=engine)
-
+class ChatRequest(BaseModel):
+    message: str
+    user_id: int
 
 
 @app.get("/")
 def root():
-    return {"message": "PaceAI backend is running"}
+    return {
+        "message": "PaceAI backend is running"
+    }
 
 
 @app.get("/auth/strava/login")
 def strava_login():
-    return RedirectResponse(get_strava_auth_url())
+    auth_url = get_strava_auth_url()
+    return RedirectResponse(auth_url)
 
 
 @app.get("/auth/strava/callback")
-def strava_callback(code: str):
-
+def strava_callback(code: str, db: Session = Depends(get_db)):
     token_data = exchange_code_for_token(code)
 
     access_token = token_data.get("access_token")
     refresh_token = token_data.get("refresh_token")
     expires_at = token_data.get("expires_at")
-
     athlete = token_data.get("athlete", {})
 
-    db: Session = SessionLocal()
-
-    try:
-        existing_user = (
-            db.query(User)
-            .filter(
-                User.strava_athlete_id == str(athlete["id"])
-            )
-            .first()
+    if not access_token or not athlete:
+        raise HTTPException(
+            status_code=400,
+            detail="Failed to retrieve Strava token or athlete data",
         )
 
-        if not existing_user:
-            user = User(
-                strava_athlete_id=str(athlete["id"]),
-                firstname=athlete.get("firstname"),
-                lastname=athlete.get("lastname"),
-            )
+    strava_athlete_id = str(athlete.get("id"))
 
-            db.add(user)
-            db.commit()
-            db.refresh(user)
+    user = (
+        db.query(models.User)
+        .filter(models.User.strava_athlete_id == strava_athlete_id)
+        .first()
+    )
 
-        else:
-            user = existing_user
-
-        token = StravaToken(
-            user_id=user.id,
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_at=expires_at,
+    if not user:
+        user = models.User(
+            strava_athlete_id=strava_athlete_id,
+            firstname=athlete.get("firstname"),
+            lastname=athlete.get("lastname"),
         )
-        db.add(token)
+        db.add(user)
         db.commit()
-        frontend_url = (
-            "http://localhost:3000/auth/callback"
-            f"?user_id={user.id}"
-        )
-        return RedirectResponse(frontend_url)
-    finally:
-        db.close()
+        db.refresh(user)
+
+    token = models.StravaToken(
+        user_id=user.id,
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at=expires_at,
+    )
+
+    db.add(token)
+    db.commit()
+
+    frontend_url = f"http://localhost:3000/auth/callback?user_id={user.id}"
+    return RedirectResponse(frontend_url)
+
+
+@app.get("/weather")
+def weather(city: str = "Dublin,IE"):
+    return get_current_weather(city=city)
+
 
 @app.get("/activities")
 def activities(
-    access_token: str,
+    user_id: int,
     per_page: int = 40,
+    db: Session = Depends(get_db),
 ):
+    access_token = get_latest_access_token(db, user_id)
+
+    if not access_token:
+        raise HTTPException(
+            status_code=404,
+            detail="No Strava token found for this user",
+        )
+
     runs = get_recent_activities(
         access_token=access_token,
         per_page=per_page,
@@ -120,28 +133,41 @@ def activities(
 
 @app.get("/acwr")
 def acwr(
-    access_token: str,
-    per_page: int = 40
+    user_id: int,
+    per_page: int = 40,
+    db: Session = Depends(get_db),
 ):
-    activities = get_recent_activities(
-        access_token=access_token,
-        per_page=per_page
-    )
-    result = calculate_acwr_from_activities(
-        activities
-    )
-    return result
+    access_token = get_latest_access_token(db, user_id)
 
-@app.get("/weather")
-def weather(city: str = "Dublin,IE"):
-    return get_current_weather(city=city)
+    if not access_token:
+        raise HTTPException(
+            status_code=404,
+            detail="No Strava token found for this user",
+        )
+
+    activities_data = get_recent_activities(
+        access_token=access_token,
+        per_page=per_page,
+    )
+
+    return calculate_acwr_from_activities(activities_data)
+
 
 @app.get("/recommendation/today")
 def today_recommendation(
-    access_token: str,
+    user_id: int,
     city: str = "Dublin,IE",
     per_page: int = 40,
+    db: Session = Depends(get_db),
 ):
+    access_token = get_latest_access_token(db, user_id)
+
+    if not access_token:
+        raise HTTPException(
+            status_code=404,
+            detail="No Strava token found for this user",
+        )
+
     return recommend_training_today(
         access_token=access_token,
         city=city,
@@ -150,11 +176,21 @@ def today_recommendation(
 
 
 @app.post("/chat")
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+):
+    access_token = get_latest_access_token(db, request.user_id)
+
+    if not access_token:
+        raise HTTPException(
+            status_code=404,
+            detail="No Strava token found for this user",
+        )
 
     result = run_paceai_agent(
         user_message=request.message,
-        access_token=request.access_token,
+        access_token=access_token,
     )
 
     return result
