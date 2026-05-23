@@ -18,23 +18,25 @@ from app.services.strava_oauth import (
 )
 from app.services.token_service import get_latest_access_token
 from app.agents.paceai_agent import run_paceai_agent
-
+import os
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="PaceAI Backend")
+
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        FRONTEND_URL
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 class ChatRequest(BaseModel):
     message: str
@@ -97,7 +99,7 @@ def strava_callback(code: str, db: Session = Depends(get_db)):
     db.add(token)
     db.commit()
 
-    frontend_url = f"http://localhost:3000/auth/callback?user_id={user.id}"
+    frontend_url = f"{FRONTEND_URL}/auth/callback?user_id={user.id}"
     return RedirectResponse(frontend_url)
 
 
